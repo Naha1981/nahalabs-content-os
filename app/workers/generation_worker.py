@@ -15,7 +15,18 @@ async def run_once() -> dict[str, int]:
     submitted = polled = failed = 0
     orchestrator = CreativeGenerationOrchestrator()
     async with AsyncSessionLocal() as db:
-        queued = (await db.execute(select(GeneratedAsset).where(GeneratedAsset.status == "queued").limit(25))).scalars().all()
+        # with_for_update(skip_locked=True) prevents two concurrent workers (e.g. overlapping
+        # SQS-triggered invocations) from both selecting the same "queued" row and both
+        # submitting it to the paid generation provider. A second worker's identical locked
+        # query simply skips any row already claimed by this transaction.
+        queued = (
+            await db.execute(
+                select(GeneratedAsset)
+                .where(GeneratedAsset.status == "queued")
+                .limit(25)
+                .with_for_update(skip_locked=True)
+            )
+        ).scalars().all()
         for asset in queued:
             try:
                 await orchestrator.submit(db, asset); submitted += 1
@@ -24,7 +35,16 @@ async def run_once() -> dict[str, int]:
                 asset.asset_metadata = {**(asset.asset_metadata or {}), "error": str(exc)}
                 failed += 1
 
-        active = (await db.execute(select(GeneratedAsset).where(GeneratedAsset.status.in_(["provider_processing", "polishing"])) .limit(50))).scalars().all()
+        # Same reasoning applies to in-flight assets: poll() can issue a second paid provider
+        # call (the polish resubmission), so these rows need the same claim protection.
+        active = (
+            await db.execute(
+                select(GeneratedAsset)
+                .where(GeneratedAsset.status.in_(["provider_processing", "polishing"]))
+                .limit(50)
+                .with_for_update(skip_locked=True)
+            )
+        ).scalars().all()
         for asset in active:
             try:
                 result = await orchestrator.poll(db, asset); polled += 1
