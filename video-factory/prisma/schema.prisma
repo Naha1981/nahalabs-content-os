@@ -1,0 +1,68 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// NahaLabs Content OS — Video Factory module
+// Status vocabulary mirrors the content-engine workers:
+// queued -> researching -> scripting -> visualizing -> narrating -> subtitling
+// -> quality_review -> approved_ready | quality_failed | failed
+model VideoProject {
+  id             String   @id @default(cuid())
+  title          String
+  topic          String
+  mode           String   @default("topic") // topic | ugc
+  productUrl     String?
+  platform       String   @default("tiktok") // tiktok | reels | shorts | youtube
+  style          String   @default("educational")
+  voice          String   @default("tongtong")
+  speed          Float    @default(1.0)
+  durationTarget Int      @default(30)
+  status         String   @default("queued")
+  stepDetail     String?
+  error          String?
+  researchJson   String?
+  scriptJson     String?
+  qualityJson    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  scenes         VideoScene[]
+  events         PipelineEvent[]
+}
+
+model VideoScene {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         VideoProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  position        Int
+  narration       String
+  onScreenText    String?
+  visualPrompt    String?
+  imageUrl        String?
+  imageStatus     String   @default("pending") // pending | generating | ready | failed
+  imageQualityJson String?
+  audioUrl        String?
+  audioStatus     String   @default("pending") // pending | generating | ready | failed
+  audioDuration   Float?
+  subtitlesJson   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([projectId, position])
+}
+
+model PipelineEvent {
+  id        String   @id @default(cuid())
+  projectId String
+  project   VideoProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  step      String
+  status    String // running | done | warning | failed | skipped
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+}

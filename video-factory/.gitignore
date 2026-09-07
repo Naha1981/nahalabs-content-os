@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+build
+db/
+public/generated/
+.env
+dev.log
+*.log
+.DS_Store

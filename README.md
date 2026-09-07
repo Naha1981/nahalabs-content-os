@@ -72,3 +72,24 @@ Run a single generation-worker pass with:
 
 ## v1.6
 Publishing now has a preflight and explicit approval boundary. Jobs cannot reach the publishing worker until internal quality passes, Zernio dry-run validation passes, and an authorized user approves the action.
+
+## v2.0 Video Factory
+
+The Video Factory (`video-factory/`) is the end-to-end production module: topic (or
+product URL for UGC ads) -> live research -> scene-by-scene script -> AI visuals ->
+TTS narration -> word-level captions -> quality gate -> playable/exportable vertical
+video (WebM in-browser, SRT, timeline JSON, Remotion composition).
+
+```bash
+cd video-factory
+cp .env.example .env
+bun install
+bun run db:push
+bun run dev
+```
+
+It is a self-contained Next.js app with its own SQLite store and a `GenerationRouter`
+provider layer that defaults to the z-ai SDK and can re-route image generation to your
+own GPU-box gateway (`VIDEO_FACTORY_IMAGE_ENDPOINT`) for ComfyUI / Wan / HunyuanVideo.
+Quality-gate semantics match the backend: `approved_ready` means eligible, never
+auto-publish. Details: `docs-v2.0-video-factory.md`.
