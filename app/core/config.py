@@ -1,6 +1,7 @@
 from functools import lru_cache
+from typing import Annotated
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -41,8 +42,8 @@ class Settings(BaseSettings):
     zernio_webhook_secret: str | None = None
 
     max_upload_bytes: int = 524_288_000
-    allowed_video_mime_types: list[str] = ['video/mp4', 'video/quicktime', 'video/webm']
-    allowed_image_mime_types: list[str] = ['image/jpeg', 'image/png', 'image/webp']
+    allowed_video_mime_types: Annotated[list[str], NoDecode] = ['video/mp4', 'video/quicktime', 'video/webm']
+    allowed_image_mime_types: Annotated[list[str], NoDecode] = ['image/jpeg', 'image/png', 'image/webp']
 
     @field_validator('allowed_video_mime_types', 'allowed_image_mime_types', mode='before')
     @classmethod

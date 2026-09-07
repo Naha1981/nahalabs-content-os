@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import logging
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -23,6 +23,11 @@ logging.basicConfig(level=settings.log_level)
 
 MAX_ATTEMPTS = 3
 RETRY_SECONDS = (30, 300, 1800)
+# A job claimed into "publishing" but never reaching execute_job's first commit (worker
+# crash/OOM/deploy between claim_jobs' commit and Zernio call) has no external_post_id yet,
+# so publishing_reconciliation_worker (which requires external_post_id IS NOT NULL) can never
+# see it. Treat rows stuck here longer than this as orphaned claims and make them reclaimable.
+STALE_CLAIM_SECONDS = 600
 
 
 def _now() -> datetime:
@@ -49,12 +54,12 @@ def _post_status(result) -> str | None:
 
 def _next_attempt(attempts: int) -> datetime:
     idx = min(max(attempts - 1, 0), len(RETRY_SECONDS) - 1)
-    from datetime import timedelta
     return _now() + timedelta(seconds=RETRY_SECONDS[idx])
 
 
 async def claim_jobs(db: AsyncSession, limit: int = 10) -> list[PublishingJob]:
     now = _now()
+    stale_cutoff = now - timedelta(seconds=STALE_CLAIM_SECONDS)
     result = await db.execute(
         select(PublishingJob)
         .where(
@@ -68,6 +73,14 @@ async def claim_jobs(db: AsyncSession, limit: int = 10) -> list[PublishingJob]:
                 & (PublishingJob.external_post_id.is_(None))
                 & PublishingJob.approved_at.is_not(None)
                 & (PublishingJob.preflight_status == 'passed'),
+                # Orphaned claim: never got far enough to receive an external_post_id, and
+                # the reconciliation worker can't see it either. Reclaim it here instead.
+                # Bounded by MAX_ATTEMPTS so a job that keeps crashing the worker doesn't
+                # get reclaimed forever without ever reaching the normal failure path.
+                (PublishingJob.status == "publishing")
+                & (PublishingJob.external_post_id.is_(None))
+                & (PublishingJob.updated_at < stale_cutoff)
+                & (PublishingJob.attempts < MAX_ATTEMPTS),
             )
         )
         .order_by(PublishingJob.created_at)

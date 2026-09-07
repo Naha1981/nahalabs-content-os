@@ -47,8 +47,14 @@ async def run_quality_check(db: AsyncSession, asset: GeneratedAsset) -> QualityC
         actual = _ratio(width,height)
         if expected in ASPECTS and actual != expected:
             issues.append('aspect_ratio_mismatch'); technical=min(technical,.5)
-        if duration <= 0: issues.append('invalid_duration'); technical=0.0
-        if duration > 180: issues.append('duration_over_180_seconds'); technical=min(technical,.5)
+        if asset.asset_type == 'video':
+            # duration only exists in ffprobe's `format` block for actual video/audio
+            # containers. Images are reported by ffprobe as a single-frame "video"
+            # stream too (codec_type == 'video') but carry no duration at all, so
+            # these checks must not run for image assets or every image would be
+            # flagged with a spurious 'invalid_duration' issue and fail quality review.
+            if duration <= 0: issues.append('invalid_duration'); technical=0.0
+            if duration > 180: issues.append('duration_over_180_seconds'); technical=min(technical,.5)
     visual = float(metadata.get('visual_score', 1.0))
     brand = float(metadata.get('brand_score', 1.0))
     platform = float(metadata.get('platform_score', 1.0))

@@ -1,0 +1,36 @@
+# Environment files -- these hold real credentials (ZERNIO_API_KEY, KIE_API_KEY,
+# DATABASE_URL, COGNITO_*, etc.) once a developer runs `cp .env.example .env` per
+# the README. Never commit them.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Frontend (Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+frontend/npm-debug.log*
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Local scratch
+*.log
