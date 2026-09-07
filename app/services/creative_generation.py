@@ -107,27 +107,48 @@ class CreativeGenerationOrchestrator:
 
     async def submit(self, db: AsyncSession, asset: GeneratedAsset) -> dict[str, Any]:
         plan = await build_generation_plan(db, asset)
+        pack = await db.get(ContentPack, asset.content_pack_id)
+        if not pack:
+            raise ValueError("Content pack not found")
         result = await self.router.submit(GenerationRequest(
             operation=plan.operation,
             prompt=plan.prompt,
             media_urls=plan.media_urls,
             aspect_ratio=plan.aspect_ratio,
             duration_seconds=plan.duration_seconds,
-            metadata={"asset_id": str(asset.id), "polish_requested": plan.polish_requested},
+            metadata={
+                "asset_id": str(asset.id),
+                "business_id": str(pack.business_id),
+                "polish_requested": plan.polish_requested,
+                "requested_provider": asset.generation_provider or "",
+            },
         ))
         asset.status = "provider_processing"
         asset.generation_provider = result.provider
         asset.generation_model = result.model
         asset.provider_job_id = result.provider_job_id
         asset.generation_cost = result.estimated_cost
-        asset.asset_metadata = {**(asset.asset_metadata or {}), "provider_status": result.status, "source_media_attached": bool(plan.media_urls)}
+        asset.asset_metadata = {
+            **(asset.asset_metadata or {}),
+            "provider_status": result.status,
+            "output_urls": list(result.output_urls),
+            "source_media_attached": bool(plan.media_urls),
+        }
         return {"status": result.status, "provider": result.provider, "provider_job_id": result.provider_job_id}
 
     async def poll(self, db: AsyncSession, asset: GeneratedAsset) -> dict[str, Any]:
         if not asset.provider_job_id or not asset.generation_provider:
             raise ValueError("Asset has no provider job")
-        result = await self.router.status(asset.generation_provider, asset.provider_job_id)
-        metadata = {**(asset.asset_metadata or {}), "provider_status": result.status, "output_urls": list(result.output_urls)}
+        existing_metadata = asset.asset_metadata or {}
+        if str(existing_metadata.get("provider_status", "")).lower() in {"completed", "complete", "succeeded", "success", "done"} and existing_metadata.get("output_urls"):
+            result = type("CompletedResult", (), {
+                "status": str(existing_metadata["provider_status"]),
+                "output_urls": tuple(existing_metadata["output_urls"]),
+                "provider": asset.generation_provider,
+            })()
+        else:
+            result = await self.router.status(asset.generation_provider, asset.provider_job_id)
+        metadata = {**existing_metadata, "provider_status": result.status, "output_urls": list(result.output_urls)}
         asset.asset_metadata = metadata
         if result.status.lower() in {"failed", "error", "cancelled", "canceled"}:
             asset.status = "failed"
