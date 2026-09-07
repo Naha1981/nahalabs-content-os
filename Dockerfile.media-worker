@@ -4,5 +4,4 @@ WORKDIR /app
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir .
 COPY app ./app
-COPY services ./services
 CMD ["python", "-m", "app.workers.media_worker", "--help"]
