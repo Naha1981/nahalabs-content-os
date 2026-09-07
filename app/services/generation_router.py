@@ -4,6 +4,7 @@ from app.core.config import get_settings
 from app.providers.contracts import GenerationProvider, GenerationRequest, GenerationResult
 from app.providers.kie import KIEProvider
 from app.providers.higgsfield import HiggsfieldProvider
+from app.providers.money_printer_turbo import MoneyPrinterTurboProvider
 
 @dataclass(frozen=True)
 class RouteDecision:
@@ -18,10 +19,18 @@ class GenerationRouter:
         self.demo_mode = s.generation_demo_mode
         self.max_cost = s.generation_max_cost_per_asset
         self.higgsfield_demo_enabled = s.higgsfield_demo_enabled
-        self.providers = providers or [KIEProvider(), HiggsfieldProvider()]
+        self.providers = providers or [KIEProvider(), HiggsfieldProvider(), MoneyPrinterTurboProvider()]
 
     def choose(self, request: GenerationRequest) -> RouteDecision:
         candidates = [p for p in self.providers if p.supports(request.operation)]
+        requested = str(request.metadata.get("requested_provider", "")).strip().lower()
+        if requested:
+            selected = next((p for p in self.providers if p.name == requested), None)
+            if selected is None:
+                raise ValueError(f"Unknown generation provider: {requested}")
+            if not selected.supports(request.operation):
+                raise ValueError(f"Generation provider is disabled or unsupported: {requested}")
+            return RouteDecision(selected.name, "explicit_provider_selection")
         if not candidates:
             raise ValueError(f"No provider supports operation={request.operation}")
         if request.operation == "polish_video":
