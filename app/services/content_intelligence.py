@@ -4,7 +4,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import BrandProfile, Business, ContentPack, CreativeBrief, SourceMedia
-from app.services.strategy_context import build_strategy_context
+from app.services.strategy_context import build_strategy_context, MIN_POSTS_FOR_WINNER
 from app.services.adaptive_strategy import choose_experiment_variant
 from app.models import ContentExperiment
 
@@ -39,8 +39,12 @@ def _ranked_pillars(context: dict[str, Any], count: int) -> list[str]:
 
 
 def _platforms(context: dict[str, Any]) -> list[str]:
+    # content_stats requires MIN_POSTS_FOR_WINNER posts before a content type is "validated"
+    # and exploited (see strategy_context.py); platform selection must honor the same
+    # do_not_overfit_single_post guardrail instead of committing every future brief to a
+    # single platform off of one lucky/unlucky measured post.
     platforms = context.get("learning", {}).get("platforms", [])
-    if platforms:
+    if platforms and platforms[0].get("posts", 0) >= MIN_POSTS_FOR_WINNER:
         return [platforms[0]["platform"]]
     return ["instagram", "facebook", "tiktok"]
 
