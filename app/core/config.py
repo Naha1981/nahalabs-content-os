@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     higgsfield_submit_path: str = '/v1/generations'
     higgsfield_status_path: str = '/v1/generations/{job_id}'
     higgsfield_demo_enabled: bool = False
+    mpt_enabled: bool = False
+    mpt_root: str = ''
+    mpt_python: str = 'python'
+    mpt_timeout_seconds: int = 1200
     zernio_api_base_url: str = 'https://zernio.com/api/v1'
     zernio_webhook_secret: str | None = None
 
