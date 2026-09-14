@@ -1,0 +1,105 @@
+name: AutoPost migration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/autopost-migrate.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: ${{ !contains(github.event.head_commit.message, '[autopost-imported]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout NahaLabs Content OS
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Preserve NahaLabs core
+        run: |
+          set -eux
+          mkdir -p /tmp/nahalabs-core
+          for p in app alembic frontend video-factory services tests; do
+            if [ -e "$p" ]; then cp -a "$p" /tmp/nahalabs-core/; fi
+          done
+          for p in Dockerfile Dockerfile.analytics-worker Dockerfile.generation-worker Dockerfile.media-worker Dockerfile.publishing-reconciliation-worker Dockerfile.publishing-worker docker-compose.demo.yml pyproject.toml alembic.ini .env.example; do
+            if [ -e "$p" ]; then cp -a "$p" "/tmp/nahalabs-core/$p"; fi
+          done
+          cp README.md /tmp/nahalabs-core/README-NAHALABS-CONTENT-OS.md
+
+      - name: Clone upstream OpenPost
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/getopenpost/openpost.git /tmp/openpost
+          rm -rf /tmp/openpost/.git
+
+      - name: Assemble AutoPost
+        run: |
+          set -eux
+          mkdir -p /tmp/autopost-root
+          cp -a /tmp/openpost/. /tmp/autopost-root/
+          mkdir -p /tmp/autopost-root/nahalabs-core
+          cp -a /tmp/nahalabs-core/. /tmp/autopost-root/nahalabs-core/
+          mkdir -p /tmp/autopost-root/docs
+          cat > /tmp/autopost-root/README-NAHALABS.md <<'EOF'
+# NahaLabs AutoPost
+
+AutoPost is the NahaLabs content operating system built around the open-source OpenPost publishing engine, with the existing NahaLabs intelligence and media-generation stack retained under `nahalabs-core/`.
+
+## Architecture
+
+- `openpost` source is the upstream OpenPost application itself at repository root.
+- `nahalabs-core/` contains NahaLabs' existing Content OS: content intelligence, strategy, KIE.ai generation, Higgsfield polish, FFmpeg/media processing, analytics, publishing preflight, workers, and the Video Factory.
+- The next integration phase connects NahaLabs intelligence to OpenPost's workspace/publication/rendition/queue model instead of duplicating those capabilities.
+
+## Important licensing
+
+OpenPost is AGPL-3.0-only. Its license and copyright notices are preserved. Any distribution or network deployment of modified OpenPost-covered code must comply with the AGPL, including the corresponding-source requirements. NahaLabs-specific code should remain clearly separated until a deliberate licensing review is completed.
+
+Source: https://github.com/getopenpost/openpost
+EOF
+          cp /tmp/nahalabs-core/README-NAHALABS-CONTENT-OS.md /tmp/autopost-root/docs/NAHALABS-CONTENT-OS-LEGACY.md
+          rm -rf ./* ./.??* 2>/dev/null || true
+          cp -a /tmp/autopost-root/. .
+          mkdir -p .github/workflows
+          cat > .github/workflows/autopost-migrate.yml <<'EOF'
+name: AutoPost migration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/autopost-migrate.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: ${{ !contains(github.event.head_commit.message, '[autopost-imported]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout NahaLabs Content OS
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Preserve and import OpenPost
+        run: |
+          echo 'Migration already assembled by the parent run.'
+      - name: Commit assembled AutoPost
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'AutoPost: import OpenPost and preserve NahaLabs core [autopost-imported]' || exit 0
+          git push
+EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'AutoPost: import OpenPost and preserve NahaLabs core [autopost-imported]'
+          git push
