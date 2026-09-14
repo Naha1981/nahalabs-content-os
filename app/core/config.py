@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     zernio_api_base_url: str = 'https://zernio.com/api/v1'
     zernio_webhook_secret: str | None = None
 
+    # AutoPost / OpenPost execution boundary.
+    # Keep this optional so existing NahaLabs deployments remain valid.
+    openpost_base_url: str = ''
+    openpost_api_token: str | None = None
+    openpost_timeout_seconds: float = 30.0
+
     max_upload_bytes: int = 524_288_000
     allowed_video_mime_types: Annotated[list[str], NoDecode] = ['video/mp4', 'video/quicktime', 'video/webm']
     allowed_image_mime_types: Annotated[list[str], NoDecode] = ['image/jpeg', 'image/png', 'image/webp']
