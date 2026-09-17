@@ -3,14 +3,49 @@ services:
     name: nahalabs-reactivate-api
     runtime: docker
     plan: free
+    region: frankfurt
     dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /health
+    autoDeploy: true
     envVars:
       - key: REACTIVATE_API_TOKEN
-        sync: false
+        generateValue: true
       - key: REACTIVATE_CORS_ORIGINS
         sync: false
       - key: REACTIVATE_DB_PATH
         value: /app/data/reactivate.db
       - key: REACTIVATE_MEDIA_DIR
         value: /app/media
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /ms-playwright
+      - key: KIE_API_KEY
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+  - type: web
+    name: nahalabs-reactivate-web
+    runtime: static
+    plan: free
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_BASE_URL
+        fromService:
+          type: web
+          name: nahalabs-reactivate-api
+          property: host
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

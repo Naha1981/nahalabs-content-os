@@ -1,4 +1,6 @@
+import os
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -37,28 +39,43 @@ from .crm import create_opportunity, get_opportunity, list_opportunities, update
 from .unified_workspace import prospect_workspace
 from .daily_operator import daily_operator
 from .scheduler import list_scheduled_jobs, set_job_enabled, run_job, list_job_runs, automation_health
+from .browser_runtime import browser_worker_status, require_browser_worker, BrowserWorkerUnavailable
 
-app = FastAPI(title="NahaLabs Reactivate API", version="0.38.4")
+APP_VERSION = "0.38.5"
+
+app = FastAPI(title="NahaLabs Reactivate API", version=APP_VERSION)
 init_db()
-MEDIA_DIR = Path(__import__("os").environ.get("REACTIVATE_MEDIA_DIR", str(Path(__file__).resolve().parent.parent / "media")))
+MEDIA_DIR = Path(os.environ.get("REACTIVATE_MEDIA_DIR", str(Path(__file__).resolve().parent.parent / "media")))
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
-@app.get("/health")
-def health() -> dict:
-    return {"status": "ok", "service": "nahalabs-reactivate", "version": "0.38.3"}
+_CORS_RAW = os.environ.get(
+    "REACTIVATE_CORS_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5175,http://127.0.0.1:5175",
+)
+_CORS_ORIGINS = [o.strip().rstrip("/") for o in _CORS_RAW.split(",") if o.strip()]
+_CORS_WILDCARD = "*" in _CORS_ORIGINS
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in __import__("os").environ.get("REACTIVATE_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()],
-    allow_credentials=True,
+    allow_origins=["*"] if _CORS_WILDCARD else _CORS_ORIGINS,
+    allow_credentials=not _CORS_WILDCARD,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
+@app.get("/health", tags=["ops"])
+def health() -> dict:
+    return {
+        "status": "ok",
+        "service": "nahalabs-reactivate",
+        "version": APP_VERSION,
+        "browser_worker": browser_worker_status(),
+    }
 
 # Optional bearer-token protection for hosted environments. Health stays public.
-_API_TOKEN = __import__("os").environ.get("REACTIVATE_API_TOKEN", "").strip()
+_API_TOKEN = os.environ.get("REACTIVATE_API_TOKEN", "").strip()
 
 @app.middleware("http")
 async def hosted_api_auth(request, call_next):
@@ -68,6 +85,26 @@ async def hosted_api_auth(request, call_next):
     if auth != f"Bearer {_API_TOKEN}":
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
+
+
+
+def _discover_maps_guarded(query: str, location: str, limit: int, headless: bool) -> list[dict]:
+    try:
+        require_browser_worker()
+    except BrowserWorkerUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    try:
+        return discover_google_maps(query, location, limit, headless)
+    except HTTPException:
+        raise
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=503, detail=(
+            "The browser worker could not start a subprocess on this platform "
+            f"({exc}). On Windows this means the Playwright event loop is not a "
+            "ProactorEventLoop; restart the backend so the compatibility shim applies."
+        ))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Google Maps discovery failed: {exc}")
 
 
 class ScoreResponse(BaseModel):
@@ -292,12 +329,9 @@ def log_outreach_event(prospect_id: int, request: OutreachEventRequest) -> dict:
 def get_outreach_events(prospect_id: int, campaign_id: int | None = None, limit: int = 50) -> dict:
     if not get_prospect(prospect_id):
         raise HTTPException(status_code=404, detail="Prospect not found")
-    return outreach_summary(prospect_id, campaign_id, path=None) if False else {"prospect_id": prospect_id, "count": len(list_outreach_events(prospect_id, campaign_id, limit)), "events": list_outreach_events(prospect_id, campaign_id, limit)}
+    events = list_outreach_events(prospect_id, campaign_id, limit)
+    return {"prospect_id": prospect_id, "count": len(events), "events": events}
 
-
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "nahalabs-reactivate"}
 
 
 @app.post("/api/v1/opportunities/score", response_model=ScoreResponse)
@@ -326,7 +360,7 @@ def inspect_page(request: PageInspectionRequest) -> dict:
 
 @app.post("/api/v1/discovery/maps")
 def discover_maps(request: MapsWorkerRequest) -> dict:
-    businesses = discover_google_maps(request.query, request.location, request.limit, request.headless)
+    businesses = _discover_maps_guarded(request.query, request.location, request.limit, request.headless)
     return {
         "provider": "google_maps",
         "query": request.query,
@@ -409,7 +443,7 @@ def enrich(request: EnrichmentRequest) -> dict:
 
 @app.post("/api/v1/discovery/pipeline")
 def discovery_pipeline(request: MapsWorkerRequest) -> dict:
-    businesses = discover_google_maps(request.query, request.location, request.limit, request.headless)
+    businesses = _discover_maps_guarded(request.query, request.location, request.limit, request.headless)
     enriched = [enrich_business(business) for business in businesses]
     return {
         "provider": "google_maps",
@@ -1038,3 +1072,11 @@ def render_production_job(job_id:int, request:RenderRequest)->dict:
     updated=update_production_job(job_id, {"status":"RENDERED", "media_url":media_url, "renderer":provider, "render_error":"", "rendered_at":rendered_at})
     update_content_asset(job["content_asset_id"], {"status":"PRODUCED"})
     return {"job":updated, "render":result, "media_url":media_url, "media_created":True}
+
+
+
+def _sort_routes_by_specificity() -> None:
+    app.router.routes.sort(key=lambda route: getattr(route, "path", "").count("{"))
+
+
+_sort_routes_by_specificity()

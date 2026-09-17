@@ -2,7 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-const API = '/api';
+function resolveApiBase(raw) {
+  let base = (raw || '').trim().replace(/\/+$/, '');
+  if (!base) return '';
+  if (!/^https?:\/\//i.test(base)) base = `https://${base}`;
+  return base.replace(/\/api$/i, '');
+}
+
+const API = resolveApiBase(import.meta.env.VITE_API_BASE_URL);
 
 function App() {
   const [query, setQuery] = useState('hair salon');
@@ -23,6 +30,7 @@ function App() {
   const [workspaceData, setWorkspaceData] = useState(null);
   const [dailyOperator, setDailyOperator] = useState(null);
   const [automation, setAutomation] = useState(null);
+  const [apiVersion, setApiVersion] = useState('…');
 
   const loadDatabase = async () => {
     setLoading(true); setError('');
@@ -113,10 +121,11 @@ function App() {
 
   const loadCRM=async()=>{try{const r=await fetch(`${API}/api/v1/crm/summary`);const d=await r.json();if(r.ok)setCrm(d)}catch(e){console.error(e)}};
   useEffect(()=>{if(view==='crm')loadCRM()},[view]);
-  useEffect(()=>{const h=e=>openWorkspace(e.detail);window.addEventListener('open-prospect-workspace',h);return()=>window.removeEventListener('open-prospect-workspace',h)},[]);
+  useEffect(()=>{let live=true;fetch(`${API}/health`).then(r=>r.json()).then(d=>{if(live)setApiVersion(d.version||'unknown')}).catch(()=>{if(live)setApiVersion('offline')});return()=>{live=false}},[]);
+useEffect(()=>{const h=e=>openWorkspace(e.detail);window.addEventListener('open-prospect-workspace',h);return()=>window.removeEventListener('open-prospect-workspace',h)},[]);
   const openWorkspace=async(p)=>{setLoading(true);setError('');try{const r=await fetch(`${API}/api/v1/prospects/${p.id}/workspace`);const d=await r.json();if(!r.ok)throw new Error(d.detail||'Workspace unavailable');setWorkspaceData(d);setView('workspace');setSelected(p)}catch(e){setError(e.message)}finally{setLoading(false)}};
   return <main className="shell">
-    <header className="topbar"><div><strong>NahaLabs Reactivate</strong><span> / v0.38.5</span></div><span>Evidence first · Social Gap explained</span></header>
+    <header className="topbar"><div><strong>NahaLabs Reactivate</strong><span> / v{apiVersion}</span></div><span>Evidence first · Social Gap explained</span></header>
     <section className="hero compact">
       <div><div className="eyebrow">PROSPECT RADAR</div><h1>Find businesses where the digital audience already exists — but the content engine has gone quiet.</h1>
         <p>The radar now runs discovery → website enrichment → social evidence → scoring. It only presents prospects supported by returned evidence.</p>

@@ -4,22 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NahaLabs Reactivate</title>
-    <script>
-      // Reactivate historically built API URLs as /api/api/v1/...
-      // Normalize that legacy form before the request reaches the browser proxy/server.
-      (() => {
-        const nativeFetch = window.fetch.bind(window);
-        window.fetch = (input, init) => {
-          if (typeof input === 'string') {
-            input = input.replace(/^\/api\/api\//, '/api/');
-          } else if (input instanceof Request) {
-            const url = input.url.replace(/^https?:\/\/[^/]+\/api\/api\//, (m) => m.replace('/api/api/', '/api/'));
-            if (url !== input.url) input = new Request(url, input);
-          }
-          return nativeFetch(input, init);
-        };
-      })();
-    </script>
   </head>
   <body>
     <div id="root"></div>
