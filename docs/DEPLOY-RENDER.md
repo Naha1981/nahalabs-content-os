@@ -9,6 +9,8 @@ The API listens on Render's `$PORT`, exposes `/health`, `/api/v1/*`, and `/media
 
 The static frontend reads `VITE_API_BASE_URL` at build time. Render supplies the API hostname through `fromService`; the frontend adds `https://` when necessary and never appends `/api`.
 
-After the first Blueprint deploy, set the API service's `REACTIVATE_CORS_ORIGINS` to the exact static site URL and redeploy the API.
+The preview Blueprint is intentionally self-configuring: CORS is set to `*` and no bearer token is generated, because a static frontend must not embed a secret API token in its public JavaScript bundle. Authentication can be added later as a separate security layer.
+
+Render's Deploy to Render flow can read this root `render.yaml` and create both services together. After approval, Render provisions the Docker API and the static frontend from the same `main` branch.
 
 The free filesystem is ephemeral, so SQLite and generated media are disposable until storage is migrated to an external database/object store or a plan with persistent storage.
