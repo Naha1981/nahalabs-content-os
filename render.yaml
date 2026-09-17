@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: nahalabs-reactivate-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: REACTIVATE_API_TOKEN
+        sync: false
+      - key: REACTIVATE_CORS_ORIGINS
+        sync: false
+      - key: REACTIVATE_DB_PATH
+        value: /app/data/reactivate.db
+      - key: REACTIVATE_MEDIA_DIR
+        value: /app/media

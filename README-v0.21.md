@@ -8,10 +8,3 @@ Frontend: `npm install && npm run dev`
 Tests: `pytest -q`
 
 The current generation engine is deterministic and provider-free. It does not claim live LLM generation until a provider is configured.
-
-## v0.22 — Voice + Captions Layer
-- Local eSpeak voiceover synthesis (real WAV, no network/API required).
-- Deterministic SRT caption generation.
-- FFmpeg mux burns captions into the video and replaces silent preview audio.
-- `POST /api/v1/production-jobs/{job_id}/media-layer` moves a successfully processed job to `READY_TO_PUBLISH`.
-- Provider boundary remains replaceable with cloud TTS later.
