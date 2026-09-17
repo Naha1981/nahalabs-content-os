@@ -1,0 +1,239 @@
+name: Apply Reactivate Render fixes
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-render-fixes.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[render-fixes]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply production fixes
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path('.')
+
+          # ---------- backend/app/main.py ----------
+          p = root / 'backend/app/main.py'
+          s = p.read_text(encoding='utf-8')
+          assert 'from fastapi import FastAPI, UploadFile, File, HTTPException' in s
+          assert 'app = FastAPI(title="NahaLabs Reactivate API", version="0.38.4")' in s
+          assert 'return {"status": "ok", "service": "nahalabs-reactivate", "version": "0.38.3"}' in s
+          assert 'def discover_maps(request: MapsWorkerRequest)' in s
+          assert 'def discovery_pipeline(request: MapsWorkerRequest)' in s
+          assert 'def run_prospect_radar(request: MapsWorkerRequest)' in s
+
+          s = s.replace(
+              'from fastapi import FastAPI, UploadFile, File, HTTPException\n',
+              'import os\nfrom fastapi import FastAPI, UploadFile, File, HTTPException\nfrom fastapi.responses import JSONResponse\n',
+              1,
+          )
+          marker = 'from .scheduler import list_scheduled_jobs, set_job_enabled, run_job, list_job_runs, automation_health\n'
+          assert marker in s
+          s = s.replace(marker, marker + 'from .browser_runtime import browser_worker_status, require_browser_worker, BrowserWorkerUnavailable\n', 1)
+
+          old_head = '''app = FastAPI(title="NahaLabs Reactivate API", version="0.38.4")
+          init_db()
+          MEDIA_DIR = Path(__import__("os").environ.get("REACTIVATE_MEDIA_DIR", str(Path(__file__).resolve().parent.parent / "media")))
+          MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+          app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+
+          @app.get("/health")
+          def health() -> dict:
+              return {"status": "ok", "service": "nahalabs-reactivate", "version": "0.38.3"}
+
+          app.add_middleware(
+              CORSMiddleware,
+              allow_origins=[o.strip() for o in __import__("os").environ.get("REACTIVATE_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()],
+              allow_credentials=True,
+              allow_methods=["*"],
+              allow_headers=["*"],
+          )
+
+
+          # Optional bearer-token protection for hosted environments. Health stays public.
+          _API_TOKEN = __import__("os").environ.get("REACTIVATE_API_TOKEN", "").strip()
+          '''
+          new_head = '''APP_VERSION = "0.38.5"
+
+          app = FastAPI(title="NahaLabs Reactivate API", version=APP_VERSION)
+          init_db()
+          MEDIA_DIR = Path(os.environ.get("REACTIVATE_MEDIA_DIR", str(Path(__file__).resolve().parent.parent / "media")))
+          MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+          app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+
+          _CORS_RAW = os.environ.get(
+              "REACTIVATE_CORS_ORIGINS",
+              "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5175,http://127.0.0.1:5175",
+          )
+          _CORS_ORIGINS = [o.strip().rstrip("/") for o in _CORS_RAW.split(",") if o.strip()]
+          _CORS_WILDCARD = "*" in _CORS_ORIGINS
+
+          app.add_middleware(
+              CORSMiddleware,
+              allow_origins=["*"] if _CORS_WILDCARD else _CORS_ORIGINS,
+              allow_credentials=not _CORS_WILDCARD,
+              allow_methods=["*"],
+              allow_headers=["*"],
+              expose_headers=["*"],
+          )
+
+
+          @app.get("/health", tags=["ops"])
+          def health() -> dict:
+              return {
+                  "status": "ok",
+                  "service": "nahalabs-reactivate",
+                  "version": APP_VERSION,
+                  "browser_worker": browser_worker_status(),
+              }
+
+
+          # Optional bearer-token protection for hosted environments. Health stays public.
+          _API_TOKEN = os.environ.get("REACTIVATE_API_TOKEN", "").strip()
+          '''
+          assert old_head in s
+          s = s.replace(old_head, new_head, 1)
+
+          old_false_health = '''
+          @app.get("/health")
+          def health() -> dict[str, str]:
+              return {"status": "ok", "service": "nahalabs-reactivate"}
+
+
+          '''
+          assert old_false_health in s
+          s = s.replace(old_false_health, '\n\n', 1)
+
+          guard = '''
+          def _discover_maps_guarded(query: str, location: str, limit: int, headless: bool) -> list[dict]:
+              try:
+                  require_browser_worker()
+              except BrowserWorkerUnavailable as exc:
+                  raise HTTPException(status_code=503, detail=str(exc))
+              try:
+                  return discover_google_maps(query, location, limit, headless)
+              except HTTPException:
+                  raise
+              except NotImplementedError as exc:
+                  raise HTTPException(
+                      status_code=503,
+                      detail=(
+                          "The browser worker could not start a subprocess on this platform "
+                          f"({exc}). On Windows this means the Playwright event loop is not a "
+                          "ProactorEventLoop; restart the backend so the compatibility shim applies."
+                      ),
+                  )
+              except Exception as exc:
+                  raise HTTPException(status_code=502, detail=f"Google Maps discovery failed: {exc}")
+
+
+          '''
+          assert 'class ScoreResponse(BaseModel):' in s
+          s = s.replace('class ScoreResponse(BaseModel):\n', guard + 'class ScoreResponse(BaseModel):\n', 1)
+
+          s = s.replace('businesses = discover_google_maps(request.query, request.location, request.limit, request.headless)', 'businesses = _discover_maps_guarded(request.query, request.location, request.limit, request.headless)')
+
+          s = s.replace(
+              'return outreach_summary(prospect_id, campaign_id, path=None) if False else {"prospect_id": prospect_id, "count": len(list_outreach_events(prospect_id, campaign_id, limit)), "events": list_outreach_events(prospect_id, campaign_id, limit)}',
+              'events = list_outreach_events(prospect_id, campaign_id, limit)\n    return {"prospect_id": prospect_id, "count": len(events), "events": events}',
+              1,
+          )
+          assert 'def _sort_routes_by_specificity' not in s
+          s += '''
+
+          # FastAPI checks routes in registration order. Put literal paths ahead of
+          # parameterised paths so /prospects/outreach-queue is not swallowed by
+          # /prospects/{prospect_id}.
+          def _sort_routes_by_specificity() -> None:
+              app.router.routes.sort(key=lambda route: getattr(route, "path", "").count("{"))
+
+
+          _sort_routes_by_specificity()
+          '''
+          p.write_text(s, encoding='utf-8')
+
+          # ---------- backend/app/browser_runtime.py ----------
+          (root / 'backend/app/browser_runtime.py').write_text('''"""Hosted Playwright/Chromium availability probe."""\n\nfrom __future__ import annotations\n\nimport os\nfrom functools import lru_cache\nfrom pathlib import Path\n\n\nclass BrowserWorkerUnavailable(RuntimeError):\n    pass\n\n\n_HINT = (\n    "The Playwright Chromium browser is not available in this environment. "\n    "Install it with `python -m playwright install --with-deps chromium`, "\n    "or rebuild the container with INSTALL_PLAYWRIGHT=true."\n)\n\n\n@lru_cache(maxsize=1)\ndef _probe() -> dict:\n    try:\n        from playwright.sync_api import sync_playwright  # noqa: F401\n    except Exception as exc:\n        return {"available": False, "reason": f"playwright package not importable: {exc}"}\n\n    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()\n    roots = [Path(override)] if override and override != "0" else [\n        Path.home() / ".cache" / "ms-playwright",\n        Path.home() / "AppData" / "Local" / "ms-playwright",\n        Path("/ms-playwright"),\n    ]\n    for root in roots:\n        try:\n            if root.is_dir() and any(root.glob("chromium*")):\n                return {"available": True, "reason": "chromium present", "path": str(root)}\n        except OSError:\n            continue\n    return {"available": False, "reason": "no chromium build found on disk"}\n\n\ndef browser_worker_status() -> dict:\n    return _probe()\n\n\ndef require_browser_worker() -> None:\n    status = _probe()\n    if not status.get("available"):\n        raise BrowserWorkerUnavailable(f"{_HINT} (detail: {status.get('reason')})")\n''', encoding='utf-8')
+
+          # ---------- Dockerfile ----------
+          (root / 'Dockerfile').write_text('''FROM python:3.13-slim\n\nARG INSTALL_PLAYWRIGHT=true\n\nENV PYTHONDONTWRITEBYTECODE=1 \\\n    PYTHONUNBUFFERED=1 \\\n    PIP_NO_CACHE_DIR=1 \\\n    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \\\n    REACTIVATE_DB_PATH=/app/data/reactivate.db \\\n    REACTIVATE_MEDIA_DIR=/app/media\n\nWORKDIR /app\n\nRUN apt-get update \\\n && apt-get install -y --no-install-recommends ffmpeg espeak curl ca-certificates \\\n && rm -rf /var/lib/apt/lists/*\n\nCOPY backend/requirements.txt /app/backend/requirements.txt\nRUN pip install --no-cache-dir -r /app/backend/requirements.txt\n\nRUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \\\n      python -m playwright install --with-deps chromium; \\\n    else \\\n      echo "Skipping Playwright browser install (INSTALL_PLAYWRIGHT=$INSTALL_PLAYWRIGHT)"; \\\n    fi\n\nCOPY backend /app/backend\nRUN mkdir -p /app/data /app/media\n\nEXPOSE 8000\n\nHEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \\\n  CMD curl -fsS "http://127.0.0.1:${PORT:-8000}/health" || exit 1\n\nCMD uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips '*'\n''', encoding='utf-8')
+
+          # ---------- render.yaml ----------
+          (root / 'render.yaml').write_text('''services:\n  - type: web\n    name: nahalabs-reactivate-api\n    runtime: docker\n    plan: free\n    region: frankfurt\n    dockerfilePath: ./Dockerfile\n    dockerContext: .\n    healthCheckPath: /health\n    autoDeploy: true\n    envVars:\n      - key: REACTIVATE_API_TOKEN\n        generateValue: true\n      - key: REACTIVATE_CORS_ORIGINS\n        sync: false\n      - key: REACTIVATE_DB_PATH\n        value: /app/data/reactivate.db\n      - key: REACTIVATE_MEDIA_DIR\n        value: /app/media\n      - key: PLAYWRIGHT_BROWSERS_PATH\n        value: /ms-playwright\n      - key: KIE_API_KEY\n        sync: false\n      - key: PYTHONUNBUFFERED\n        value: "1"\n\n  - type: web\n    name: nahalabs-reactivate-web\n    runtime: static\n    plan: free\n    rootDir: frontend\n    buildCommand: npm ci && npm run build\n    staticPublishPath: ./dist\n    autoDeploy: true\n    envVars:\n      - key: VITE_API_BASE_URL\n        fromService:\n          type: web\n          name: nahalabs-reactivate-api\n          property: host\n    headers:\n      - path: /*\n        name: X-Frame-Options\n        value: SAMEORIGIN\n      - path: /*\n        name: X-Content-Type-Options\n        value: nosniff\n    routes:\n      - type: rewrite\n        source: /*\n        destination: /index.html\n''', encoding='utf-8')
+
+          # ---------- frontend/package.json ----------
+          package = {\n              'name':'nahalabs-reactivate-frontend',\n              'private':True,\n              'version':'0.38.5',\n              'type':'module',\n              'scripts':{'dev':'vite','build':'vite build','preview':'vite preview'},\n              'dependencies':{'react':'^18.3.1','react-dom':'^18.3.1'},\n              'devDependencies':{'@vitejs/plugin-react':'^4.7.0','vite':'^5.4.21'},\n          }\n          (root / 'frontend/package.json').write_text(json.dumps(package, indent=2) + '\\n', encoding='utf-8')
+
+          # ---------- frontend/vite.config.js ----------
+          (root / 'frontend/vite.config.js').write_text('''import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\n\nconst BACKEND = process.env.VITE_DEV_BACKEND || 'http://127.0.0.1:8000';\n\nexport default defineConfig({\n  plugins: [react()],\n  server: {\n    host: 'localhost',\n    port: 5175,\n    proxy: {\n      '/api': { target: BACKEND, changeOrigin: true },\n      '/media': { target: BACKEND, changeOrigin: true },\n      '/health': { target: BACKEND, changeOrigin: true },\n    },\n  },\n  build: { outDir: 'dist', sourcemap: false },\n});\n''', encoding='utf-8')
+
+          # ---------- frontend/index.html ----------
+          (root / 'frontend/index.html').write_text('''<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>NahaLabs Reactivate</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.jsx"></script>\n  </body>\n</html>\n''', encoding='utf-8')
+
+          # ---------- frontend/src/main.jsx ----------
+          p = root / 'frontend/src/main.jsx'
+          s = p.read_text(encoding='utf-8')
+          assert "const API = '/api';" in s
+          assert '<header className="topbar"><div><strong>NahaLabs Reactivate</strong><span> / v0.38.5</span></div><span>Evidence first · Social Gap explained</span></header>' in s
+          s = s.replace("const API = '/api';", '''function resolveApiBase(raw) {\n  let base = (raw || '').trim().replace(/\\/+$/, '');\n  if (!base) return '';\n  if (!/^https?:\\/\\//i.test(base)) base = `https://${base}`;\n  return base.replace(/\\/api$/i, '');\n}\n\nconst API = resolveApiBase(import.meta.env.VITE_API_BASE_URL);''', 1)
+          s = s.replace("  const [automation, setAutomation] = useState(null);", "  const [automation, setAutomation] = useState(null);\n  const [apiVersion, setApiVersion] = useState('…');", 1)
+          anchor = "        useEffect(()=>{const h=e=>openWorkspace(e.detail);window.addEventListener('open-prospect-workspace',h);return()=>window.removeEventListener('open-prospect-workspace',h)},[]);"
+          if anchor not in s:
+              anchor = "  useEffect(()=>{const h=e=>openWorkspace(e.detail);window.addEventListener('open-prospect-workspace',h);return()=>window.removeEventListener('open-prospect-workspace',h)},[]);"
+          assert anchor in s
+          s = s.replace(anchor, "  useEffect(()=>{let live=true;fetch(`${API}/health`).then(r=>r.json()).then(d=>{if(live)setApiVersion(d.version||'unknown')}).catch(()=>{if(live)setApiVersion('offline')});return()=>{live=false}},[]);\n" + anchor, 1)
+          s = s.replace('<header className="topbar"><div><strong>NahaLabs Reactivate</strong><span> / v0.38.5</span></div><span>Evidence first · Social Gap explained</span></header>', '<header className="topbar"><div><strong>NahaLabs Reactivate</strong><span> / v{apiVersion}</span></div><span>Evidence first · Social Gap explained</span></header>', 1)
+          p.write_text(s, encoding='utf-8')
+
+          # ---------- .gitignore ----------
+          (root / '.gitignore').write_text('''.env\n.env.*\n!.env.example\n*.db\n*.sqlite\n*.sqlite3\n.pytest_cache/\n.venv/\n__pycache__/\ndist/\nfrontend/dist/\nfrontend/node_modules/\nnode_modules/\n''', encoding='utf-8')
+          PY
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg espeak
+          python -m pip install -r backend/requirements.txt
+          python -m playwright install chromium
+          cd frontend
+          npm ci
+
+      - name: Verify backend
+        run: |
+          python -m compileall backend
+          pytest -q
+
+      - name: Verify frontend
+        run: |
+          cd frontend
+          npm run build
+          if grep -Rq '/api/api' dist/assets/*.js; then
+            echo 'Regression: /api/api double prefix found in production bundle'
+            exit 1
+          fi
+
+      - name: Commit production fixes to main
+        run: |
+          git config user.name 'NahaLabs Render Fix Bot'
+          git config user.email 'dev@nahalabs.local'
+          git add .
+          git status --short
+          git commit -m 'Apply Reactivate production Render fixes [render-fixes]'
+          git push origin HEAD:main
