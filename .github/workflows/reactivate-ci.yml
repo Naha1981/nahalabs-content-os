@@ -36,9 +36,16 @@ jobs:
         with:
           node-version: 22
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
       - name: Build frontend
         run: npm run build
+      - name: Assert the legacy double API prefix is gone
+        run: |
+          if grep -Rq '/api/api' dist/assets/*.js; then
+            echo 'Regression: /api/api double prefix is back in the production bundle'
+            exit 1
+          fi
+          echo 'No /api/api double prefix found'
 
   smoke:
     name: Full stack smoke test
@@ -56,29 +63,43 @@ jobs:
           node-version: 22
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm install
+        run: npm ci
       - name: Start backend
+        env:
+          PORT: '8000'
         run: |
-          nohup uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 >/tmp/reactivate-backend.log 2>&1 &
+          nohup uvicorn backend.app.main:app --host 127.0.0.1 --port "$PORT" >/tmp/reactivate-backend.log 2>&1 &
           for i in {1..30}; do curl -fsS http://127.0.0.1:8000/health >/dev/null && break; sleep 1; done
-          curl -fsS http://127.0.0.1:8000/health
+          curl -fsS http://127.0.0.1:8000/health > /tmp/health.json
+          python - <<'PY'
+          import json
+          data = json.load(open('/tmp/health.json', encoding='utf-8'))
+          assert data['status'] == 'ok', data
+          assert data['version'], data
+          assert 'browser_worker' in data, data
+          print('Health OK:', data['version'])
+          PY
       - name: Start frontend
         working-directory: frontend
         run: |
-          nohup npm run dev -- --host 127.0.0.1 --port 5173 >/tmp/reactivate-frontend.log 2>&1 &
-          for i in {1..30}; do curl -fsS http://127.0.0.1:5173 >/dev/null && break; sleep 1; done
-          curl -fsS http://127.0.0.1:5173 >/dev/null
-      - name: Verify exact legacy API request path
+          nohup npm run dev -- --host 127.0.0.1 --port 5175 >/tmp/reactivate-frontend.log 2>&1 &
+          for i in {1..30}; do curl -fsS http://127.0.0.1:5175 >/dev/null && break; sleep 1; done
+          curl -fsS http://127.0.0.1:5175 >/dev/null
+      - name: Verify canonical API request path through dev proxy
         run: |
-          response=$(curl -fsS -o /tmp/prospects.json -w '%{http_code}' 'http://127.0.0.1:5173/api/api/v1/prospects?limit=1')
-          test "$response" = "200"
+          code=$(curl -fsS -o /tmp/prospects.json -w '%{http_code}' 'http://127.0.0.1:5175/api/v1/prospects?limit=1')
+          test "$code" = '200'
           python - <<'PY'
           import json
-          with open('/tmp/prospects.json', encoding='utf-8') as f:
-              data = json.load(f)
+          data = json.load(open('/tmp/prospects.json', encoding='utf-8'))
           assert 'prospects' in data, data
-          print('Legacy API path smoke test passed')
+          print('Canonical API path smoke test passed')
           PY
+      - name: Verify outreach queue route specificity
+        run: |
+          code=$(curl -fsS -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8000/api/v1/prospects/outreach-queue')
+          test "$code" = '200'
+          echo 'Outreach queue route resolves correctly'
       - name: Dump server logs on failure
         if: failure()
         run: |
