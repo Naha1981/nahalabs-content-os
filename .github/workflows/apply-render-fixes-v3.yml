@@ -20,7 +20,9 @@ jobs:
           fetch-depth: 0
 
       - name: Run source migration
-        run: python scripts/apply_render_fixes.py
+        run: |
+          sed -i '/^PY$/d' scripts/apply_render_fixes.py
+          python scripts/apply_render_fixes.py
 
       - name: Install verification dependencies
         run: |
